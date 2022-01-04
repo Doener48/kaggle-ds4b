@@ -1,0 +1,203 @@
+---
+title: "Data Science for Business - Week 08: Kaggle Competition on Prediction of Elecricity Consumption"
+author: "Oliver Mueller"
+output: html_notebook
+---
+
+# Initialize notebook
+
+Load required packages.
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+library(naniar)
+
+```
+
+Set up workspace, i.e., remove all existing data from working memory, initialize the random number generator, turn of scientific notation of large numbers, set a standard theme for plotting. Finally, we activate parallel processing on multiple CPU cores.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(42)
+options(scipen=10000)
+ggthemr('fresh')
+doParallel::registerDoParallel(cores = 3)
+
+```
+
+# Problem description
+
+In this Kaggle competition, you will develop accurate models of metered building electricity usage in the following areas. The data comes from 100 buildings over a one-year time period.
+
+# Load data
+
+Load data from CSV files.
+
+```{r}
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+```
+
+# Explore Data
+
+Analyze data quality (esp. missing values).
+
+```{r}
+vis_miss(sample_frac(train, 0.01))
+
+```
+
+# Modeling
+
+## Model
+
+Create a `model` specification for a LASSO model with a tunable `penalty` hyperparameter .
+
+```{r}
+electricity_mod_01 <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+
+electricity_mod_01
+
+```
+
+## Recipe
+
+Next, we specify a `recipe` for data preprocessing and feature engineering. 
+
+```{r}
+electricity_recipe <- 
+  recipe(meter_reading ~ ., data = train) %>%
+  step_mutate(
+    month = as.factor(lubridate::month(timestamp)),
+    dow = as.factor(lubridate::wday(timestamp)),
+    dom = as.factor(lubridate::day(timestamp)),
+    hour = as.factor(lubridate::hour(timestamp)) # extract hour of the day
+  ) %>% 
+  step_rm(timestamp, cloud_coverage,precip_depth_1_hr) %>% 
+  step_medianimpute(all_numeric()) %>% 
+  step_modeimpute(all_nominal()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_dummy(all_nominal(), -all_outcomes())
+ 
+electricity_recipe
+
+```
+
+`Bake` the recipe, just the check whether it produces the expected results.
+
+```{r}
+tmp <- electricity_recipe %>% 
+  prep() %>% 
+  bake(head(train))
+
+names(tmp)
+```
+
+## Workflow
+
+The final specification is for the `workflow`, which glues together the `model` and `recipe`.
+
+```{r}
+electricity_wflow <- workflow() %>% 
+  add_model(electricity_mod_01) %>% 
+  add_recipe(electricity_recipe)
+
+electricity_wflow
+
+```
+
+## Resampling
+
+For tuning we use `3-fold cross validation`.
+
+```{r}
+folds <- vfold_cv(train, v = 3)
+
+```
+
+## Hyperparameter Search
+
+We define a regular grid as the search space for the best hyperparameter values.
+
+```{r}
+lambda_grid <- grid_regular(penalty(range = c(-4,4)), levels = 20)
+lambda_grid
+
+```
+
+## Tuning
+
+Now, we can `tune` the workflow using the `tune grid` and training `folds`.
+
+```{r}
+electricity_tuned <- electricity_wflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = lambda_grid
+)
+
+```
+
+## Evaluation
+
+and inspect the resulting `metrics`...
+
+```{r}
+collect_metrics(electricity_tuned)
+
+```
+
+# Upload to Kaggle
+
+We retrain our model with the best hyperparameters on the full training set (without resampling) and use the resulting model to make predictions on the test set.
+
+```{r}
+electricity_best <- finalize_workflow(electricity_wflow, select_best(electricity_tuned, "rmse"))
+
+electricity_best_fit <- electricity_best %>% 
+  fit(train)
+
+
+
+preds <- predict(electricity_best_fit, new_data = test)
+
+```
+
+Finally, we extract the predictions (`preds`) for the test set, bind it together with the `id` columns, rename the column headings, and export the results as a CSV file.
+
+```{r}
+submission <- test %>%
+  select(id) %>% 
+  bind_cols(preds)
+
+names(submission) <- c("id", "meter_reading")
+
+write_csv(submission, "my_submission.csv")
+
+```
+
+# Your Task
+
+Now it's your turn. Try one or more of the following strategies:
+
+1.  `Feature engineering`, that is,
+
+    -   *transform* existing variables (see <https://recipes.tidymodels.org/reference/index.html#section-step-functions-individual-transformations>),
+
+    -   use different *imputations* for missing values (see <https://recipes.tidymodels.org/reference/index.html#section-step-functions-imputation>),
+
+    -   create *new features* from the original variables (e.g., weekday or weekend?),
+
+    -   create *interaction terms* (see <https://recipes.tidymodels.org/reference/step_interact.html>),
+
+2.  Use `LASSO` instead of LM. To tune the `lambda` penalty term, you have to extend the above code by adding code for hyperparameter tuning (see code from Week 6).
+
+3.  Use non-linear `splines` (see Week 7). You can fit natural splines by adding `step_ns` steps to the recipe and try different `deg_free` parameter values (see <https://recipes.tidymodels.org/reference/step_ns.html>). The best deg\_free parameter value can also be determined through tuning.
+
+Please upload your best predictions to our Kaggle competition (<https://www.kaggle.com/c/predicting-electricity-consumption>) - you are allowed to make 20 submissions per day.

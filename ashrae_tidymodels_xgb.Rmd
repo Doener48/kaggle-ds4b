@@ -1,0 +1,183 @@
+---
+title: "Data Science for Business - Week 09: Kaggle Competition on Prediction of Elecricity Consumption (Boosting)"
+author: "Oliver Mueller"
+output: html_notebook
+---
+
+# Initialize notebook
+
+Load required packages.
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+library(naniar)
+
+```
+
+Set up workspace, i.e., remove all existing data from working memory, initialize the random number generator, turn of scientific notation of large numbers, set a standard theme for plotting. Finally, we activate parallel processing on multiple CPU cores.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(42)
+options(scipen=10000)
+ggthemr('fresh')
+doParallel::registerDoParallel(cores = 8)
+
+```
+
+# Problem description
+
+In this Kaggle competition, you will develop accurate models of metered building electricity usage in the following areas. The data comes from 100 buildings over a one-year time period.
+
+# Load data
+
+Load data from CSV files.
+
+```{r}
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+```
+
+# Modeling
+
+## Model
+
+Create a `model` specification for tree-based models (`rand_forest` or `boost_tree`) with tunable hyperparameters.
+
+```{r}
+electricity_mod_01 <- boost_tree(mode = "regression", 
+                                 trees = tune(),
+                                 tree_depth = tune(),
+                                 learn_rate = tune()
+                                 ) %>%
+  set_engine("xgboost")
+
+electricity_mod_01
+
+```
+
+## Recipe
+
+Next, we specify a `recipe` for data preprocessing and feature engineering. XGBOOST requires a bit more data preprocessing than random forest, namely, dummy coding.
+
+```{r}
+electricity_recipe <- 
+  recipe(meter_reading ~ ., data = train) %>%
+  step_sample(size = 0.1) %>% # sample from the training data for performance reasons
+  step_mutate(
+    month = as.factor(lubridate::month(timestamp)),
+    dow = as.factor(lubridate::wday(timestamp)),
+    hour = as.factor(lubridate::hour(timestamp))
+  ) %>% 
+  step_rm(timestamp, building_id, cloud_coverage) %>% 
+  step_medianimpute(all_numeric_predictors()) %>% 
+  step_modeimpute(all_nominal()) %>% 
+  step_dummy(all_nominal(), -all_outcomes())
+
+electricity_recipe
+
+```
+
+`Bake` the recipe, just the check whether it produces the expected results.
+
+```{r}
+tmp <- electricity_recipe %>% 
+  prep() %>% 
+  bake(head(train))
+
+head(tmp)
+
+```
+
+## Workflow
+
+The final specification is for the `workflow`, which glues together the `model` and `recipe`.
+
+```{r}
+electricity_wflow <- workflow() %>% 
+  add_model(electricity_mod_01) %>% 
+  add_recipe(electricity_recipe)
+
+electricity_wflow
+
+```
+
+## Resampling
+
+We use `3-fold cross validation` for tuning hyperparameters and calculating accuracy.
+
+```{r}
+folds <- vfold_cv(train, v = 3)
+
+```
+
+## Hyperparameter Search
+
+Let's use a `random grid` with a defined `size` for sampling hyperparameter values.
+
+```{r}
+hyp_grid <- grid_random(trees(c(500, 2000)), 
+                        tree_depth(range = c(3,20)),
+                        learn_rate(),
+                        size = 10)
+hyp_grid
+
+```
+
+## Tuning
+
+Now, we can `tune` the workflow using the `tune grid` function and the resampling `folds`. THIS WILL TAKE A WHILE!!!
+
+```{r}
+electricity_tuned <- electricity_wflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = hyp_grid
+)
+
+```
+
+## Evaluation
+
+Wake up and inspect the results.
+
+```{r}
+collect_metrics(electricity_tuned)
+
+```
+
+# Upload to Kaggle
+
+Now we retrain our model with the best hyperparameters and without resampling on the full training set and use it to make predictions on the test set.
+
+```{r}
+electricity_best <- finalize_workflow(electricity_wflow, select_best(electricity_tuned, "rmse"))
+
+electricity_best_fit <- electricity_best %>% 
+  fit(train)
+
+preds <- predict(electricity_best_fit, new_data = test)
+
+```
+
+Finally, we extract the predictions (`preds`) for the test set, bind it together with the `id` columns, rename the column headings, and export the results as a CSV file.
+
+```{r}
+submission <- test %>%
+  select(id) %>% 
+  bind_cols(preds)
+
+names(submission) <- c("id", "meter_reading")
+
+write_csv(submission, "my_submission_boost.csv")
+
+```
+
+# Your Task
+
+Tune a tree-based model to make it to the top of our Kaggle leaderboard!

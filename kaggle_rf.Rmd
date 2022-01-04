@@ -1,0 +1,142 @@
+---
+title: "DS4B Kaggle Competition - Random Forest"
+author: "Dennis Wüppelmann"
+output: html_notebook
+---
+# Initialize notebook
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+library(naniar)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(456)
+options(scipen=10000)
+ggthemr('fresh')
+doParallel::registerDoParallel(cores = 8)
+
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+```
+
+# Modeling
+
+## Model
+
+Create a `model` specification for tree-based models (`rand_forest` or `boost_tree`) with tunable hyperparameters.
+
+```{r}
+electricity_model <- rand_forest(mode = "regression",  mtry = 10,  trees = 600) %>%
+  set_engine("ranger")
+
+electricity_model
+
+electricity_recipe <- 
+  recipe(meter_reading ~ ., data = train) %>%
+  #step_sample(size = 0.7) %>% # sample from the training data for performance reasons
+  step_mutate(
+    month = as.factor(lubridate::month(timestamp)),
+    dow = as.factor(lubridate::wday(timestamp)),
+    hour = as.factor(lubridate::hour(timestamp))
+  ) %>% 
+  step_rm(timestamp, building_id, cloud_coverage) %>% 
+  step_medianimpute(all_numeric_predictors()) %>% 
+  step_modeimpute(all_nominal())
+
+electricity_recipe
+
+```
+
+`Bake` the recipe, just the check whether it produces the expected results.
+
+```{r}
+tmp <- electricity_recipe %>% 
+  prep() %>% 
+  bake(head(train))
+
+head(tmp)
+
+```
+
+## Workflow
+
+The final specification is for the `workflow`, which glues together the `model` and `recipe`.
+
+```{r}
+electricity_wflow <- workflow() %>% 
+  add_model(electricity_model) %>% 
+  add_recipe(electricity_recipe)
+
+electricity_wflow
+
+```
+
+## Resampling
+
+We use `3-fold cross validation` for tuning hyperparameters and calculating accuracy.
+
+```{r}
+folds <- vfold_cv(train, v = 3)
+
+```
+
+## Sample with no tuning
+```{r}
+electricity_fit <- electricity_wflow %>% 
+  fit_resamples(folds)
+
+collect_metrics(electricity_fit)
+```
+
+## Hyperparameter Search
+
+Let's use a `random grid` with a defined `size` for sampling hyperparameter values.
+
+```{r}
+hyp_grid <- grid_random(mtry(range = c(3,15)), trees(c(10,1000)), size = 10)
+hyp_grid
+
+electricity_tuned <- electricity_wflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = hyp_grid
+)
+collect_metrics(electricity_tuned)
+```
+
+
+# Upload to Kaggle
+
+Now we retrain our model with the best hyperparameters and without resampling on the full training set and use it to make predictions on the test set.
+
+```{r}
+electricity_best <- finalize_workflow(electricity_wflow, select_best(electricity_fit, "rmse"))
+
+electricity_best_fit <- electricity_best %>% 
+  fit(train)
+
+preds <- predict(electricity_best_fit, new_data = test)
+
+```
+
+Finally, we extract the predictions (`preds`) for the test set, bind it together with the `id` columns, rename the column headings, and export the results as a CSV file.
+
+```{r}
+submission <- test %>%
+  select(id) %>% 
+  bind_cols(preds)
+
+names(submission) <- c("id", "meter_reading")
+
+write_csv(submission, "my_submission_rdmf.csv")
+
+```
+
+# Your Task
+
+Tune a tree-based model to make it to the top of our Kaggle leaderboard!

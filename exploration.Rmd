@@ -1,0 +1,110 @@
+---
+title: "Data Science for Business - Week 08: Kaggle Competition on Prediction of Elecricity Consumption"
+author: "Oliver Mueller"
+output: html_notebook
+---
+
+# Initialize notebook
+
+Load required packages.
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+library(naniar)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(42)
+options(scipen=10000)
+ggthemr('fresh')
+doParallel::registerDoParallel()
+
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+```
+
+```{r}
+test$year_built <- factor(test$year_built)
+
+str(test)
+
+```
+
+# Explore data
+
+Summary stats.
+
+```{r}
+summary(train)
+
+```
+
+Analyze data quality (esp. missing values).
+
+```{r}
+vis_miss(sample_frac(train, 0.01))
+
+```
+
+Histogram of `meter_reading`.
+
+```{r}
+ggplot(data=filter(train)) +
+  geom_histogram(mapping = aes(x=meter_reading), color="white")
+
+```
+
+Explore numerical predictors.
+
+```{r}
+ggplot(data=train) +
+  geom_histogram(mapping = aes(x=square_feet), color="white")
+
+```
+
+Explore categorical predictors.
+
+```{r}
+ggplot(data=train) +
+  geom_bar(mapping = aes(x=primary_use)) + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+```{r}
+ggplot(data=train) +
+  geom_bar(mapping = aes(x=as.factor(year_built))) + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+Explore bivariate relationships between target and categorical predictors.
+
+```{r}
+ggplot(data=train) +
+  geom_boxplot(mapping = aes(y=meter_reading, x=primary_use)) +
+  scale_y_log10() + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+```{r}
+ggplot(data=train) +
+  geom_boxplot(mapping = aes(y=meter_reading, x=as.factor(year_built))) +
+  scale_y_log10() + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+Explore bivariate relationships between target and numerical predictors.
+
+```{r}
+ggplot(data=sample_frac(train, 0.1)) +
+  geom_point(mapping=aes(x=square_feet, y=meter_reading), alpha=0.1) +
+  geom_smooth(mapping=aes(x=square_feet, y=meter_reading), method="lm")
+
+```

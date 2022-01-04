@@ -1,0 +1,138 @@
+---
+title: "DS4B Kaggle Competition - splines"
+author: "Dennis Wüppelmann"
+output: html_notebook
+---
+# Initialize notebook
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(123)
+options(scipen=10000)
+ggthemr('fresh')
+doParallel::registerDoParallel()
+
+```
+
+
+```{r}
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+```
+
+
+```{r}
+electricity_model <- linear_reg() %>% 
+  set_engine("lm")
+
+electricity_model
+
+```
+
+## Recipe
+
+Next, we specify a `recipe` for data preprocessing.
+
+```{r}
+electricity_recipe <- 
+  recipe(meter_reading ~ ., data = train) %>%
+  step_mutate(
+    month = as.factor(lubridate::month(timestamp)),
+    dow = as.factor(lubridate::wday(timestamp)),
+    #weekend = as.factor(ifelse(lubridate::wday(timestamp)<6,"Weekday","Weekend"))
+  ) %>% 
+  step_rm(timestamp, building_id) %>% 
+  step_impute_median(all_numeric(), -all_outcomes()) %>% 
+  step_impute_mode(all_nominal(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_ns(all_numeric_predictors())
+
+electricity_wflow <- workflow() %>% 
+  add_model(electricity_model) %>% 
+  add_recipe(electricity_recipe)
+
+electricity_wflow
+```
+
+## Workflow
+
+The final specification is for the `workflow`, which glues together the `model` and `recipe`.
+```{r}
+folds <- vfold_cv(train, v = 3)
+
+electricity_fit <- electricity_wflow %>% 
+  fit_resamples(folds)
+
+collect_metrics(electricity_fit)
+```
+
+```{r}
+folds <- vfold_cv(train, v = 3)
+lambda_grid <- grid_regular(
+  deg_free(range = c(1, 10)), 
+  levels = 20
+  )
+
+electricity_tuned <- electricity_wflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = lambda_grid
+)
+
+
+show_best(electricity_tuned, "rmse")
+```
+
+# Upload to Kaggle
+
+We retrain our model without resampling on the full training set and use the model to make predictions on the test set.
+
+```{r}
+electricity_best <- finalize_workflow(electricity_wflow, select_best(electricity_fit, "rmse"))
+
+electricity_best_fit <- electricity_best %>% 
+  fit(train)
+
+preds <- predict(electricity_best_fit, new_data = test)
+
+```
+
+Finally, we extract the predictions (`preds`) for the test set, bind it together with the `id` columns, rename the column headings, and export the results as a CSV file.
+
+```{r}
+submission <- test %>%
+  select(id) %>% 
+  bind_cols(preds)
+
+names(submission) <- c("id", "meter_reading")
+
+write_csv(submission, "my_submission_spline_all.csv")
+
+```
+
+# Your Task
+
+Now it's your turn. Try one or more of the following strategies:
+
+1.  `Feature engineering`, that is,
+
+    -   *transform* existing variables (see <https://recipes.tidymodels.org/reference/index.html#section-step-functions-individual-transformations>),
+
+    -   use different *imputations* for missing values (see <https://recipes.tidymodels.org/reference/index.html#section-step-functions-imputation>),
+
+    -   create *new features* from the original variables (e.g., weekday or weekend?),
+
+    -   create *interaction terms* (see <https://recipes.tidymodels.org/reference/step_interact.html>),
+
+2.  Use `LASSO` instead of LM. To tune the `lambda` penalty term, you have to extend the above code by adding code for hyperparameter tuning (see code from Week 6).
+
+3.  Use non-linear `splines` (see Week 7). You can fit natural splines by adding `step_ns` steps to the recipe and try different `deg_free` parameter values (see <https://recipes.tidymodels.org/reference/step_ns.html>). The best deg\_free parameter value can also be determined through tuning.
+

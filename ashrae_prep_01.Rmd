@@ -1,0 +1,117 @@
+---
+title: "Ashrae Great Energy Predictor III - GAM"
+author: "Oliver Mueller"
+output: html_notebook
+---
+
+
+# Initialize notebook
+
+Load required packages.
+```{r load packages, warning=FALSE, message=FALSE}
+library(RMySQL)
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+
+```
+
+Set up workspace, i.e., remove all existing data from working memory, initialize the random number generator, turn of scientific notation of large numbers, set a standard theme for plotting.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(42)
+options(scipen=10000)
+ggthemr('fresh')
+
+```
+
+
+# Problem description
+In this Kaggle competition, you will develop accurate models of metered building energy usage in the following areas: electricity (meter 0), chilled water (meter 1), steam (meter 2), and  hot water (meter 3). The data comes from over 1,000 buildings over a three-year time period.
+
+
+# Load data
+
+Establish connection to MySQL database.
+
+```{r}
+driver <- dbDriver("MySQL")
+
+connection <- dbConnect(driver,
+                        host ="manila.uni-paderborn.de", 
+                        port =3306,
+                        dbname = "ashrae",
+                        user = "student", password = "upb123!")
+
+```
+
+Read training set from MySQL database. To limit run time of our models, we will focus on electricity consumption (meter 0) of the first 100 buildings.
+
+```{r}
+data <- dbGetQuery(connection, statement = "
+                  SELECT *
+                  FROM train 
+                  WHERE meter = 0
+                  AND building_id <= 100")
+
+weather <- dbGetQuery(connection, statement = "
+                  SELECT *
+                  FROM weather_train")
+
+building_metadata <- dbGetQuery(connection, statement = "
+                  SELECT *
+                  FROM building_metadata")
+
+```
+
+
+# Prepare data
+
+Transform data types, extract information from timesteps, handle missing values, join data frames, train/test split, etc.
+
+```{r}
+data_joined <- data %>% 
+  inner_join(building_metadata, by = "building_id") %>% 
+  inner_join(weather, by = c("site_id", "timestamp")) %>% 
+  mutate(
+    site_id = factor(site_id),
+    building_id = factor(building_id),
+  ) %>% 
+  select(-meter, -site_id, -floor_count)
+
+data_split <- initial_split(data_joined, prop = .8, strata = meter_reading)
+train <- training(data_split)
+test  <- testing(data_split)
+
+test <- test %>% 
+  mutate(
+    id = str_c(building_id, " - ", timestamp)
+  )
+
+solution <- test %>% 
+  select(id, meter_reading)
+
+sample_submission <- test %>% 
+  select(id) %>% 
+  mutate(
+    meter_reading = 0
+  )
+
+test <- test %>% 
+  select(-meter_reading)
+
+```
+
+Backup/restore prepared data.
+
+```{r}
+write_csv(train, "train.csv")
+write_csv(test, "test.csv")
+write_csv(solution, "solution.csv")
+write_csv(sample_submission, "sample_submission.csv")
+
+```
+

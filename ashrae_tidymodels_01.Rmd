@@ -1,0 +1,230 @@
+---
+title: "Data Science for Business - Week 08: Kaggle Competition on Prediction of Elecricity Consumption"
+author: "Oliver Mueller"
+output: html_notebook
+---
+
+# Initialize notebook
+
+Load required packages.
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemr)
+library(tidymodels)
+
+```
+
+Set up workspace, i.e., remove all existing data from working memory, initialize the random number generator, turn of scientific notation of large numbers, set a standard theme for plotting. Finally, we activate parallel processing on multiple CPU cores.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+rm(list=ls())
+set.seed(42)
+options(scipen=10000)
+ggthemr('fresh')
+doParallel::registerDoParallel()
+
+```
+
+# Problem description
+
+In this Kaggle competition, you will develop accurate models of metered building electricity usage in the following areas. The data comes from 100 buildings over a one-year time period.
+
+# Load data
+
+Load data from CSV files.
+
+```{r}
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+```
+
+# Explore data
+
+Summary stats.
+
+```{r}
+summary(train)
+
+```
+
+Histogram of `meter_reading`.
+
+```{r}
+ggplot(data=filter(train)) +
+  geom_histogram(mapping = aes(x=meter_reading), color="white")
+
+```
+
+Explore numerical predictors.
+
+```{r}
+ggplot(data=train) +
+  geom_histogram(mapping = aes(x=square_feet), color="white")
+
+```
+
+Explore categorical predictors.
+
+```{r}
+ggplot(data=train) +
+  geom_bar(mapping = aes(x=primary_use)) + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+Explore bivariate relationships between target and categorical predictors.
+
+```{r}
+ggplot(data=train) +
+  geom_boxplot(mapping = aes(y=meter_reading, x=primary_use)) +
+  scale_y_log10() + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+Explore bivariate relationships between target and numerical predictors.
+
+```{r}
+ggplot(data=sample_frac(train, 0.1)) +
+  geom_point(mapping=aes(x=square_feet, y=meter_reading), alpha=0.1) +
+  geom_smooth(mapping=aes(x=square_feet, y=meter_reading), method="lm")
+
+```
+
+# Modeling
+
+## Model
+
+Create a simple `model` specification for an OLS linear regression.
+
+```{r}
+electricity_mod_01 <- linear_reg() %>% 
+  set_engine("lm")
+
+electricity_mod_01
+
+```
+
+## Recipe
+
+Next, we specify a `recipe` for data preprocessing.
+
+```{r}
+electricity_recipe <- 
+  recipe(meter_reading ~ ., data = train) %>%
+  step_mutate(
+    month = as.factor(lubridate::month(timestamp)),
+    dow = as.factor(lubridate::wday(timestamp)),
+    dom = as.factor(lubridate::day(timestamp))
+  ) %>% 
+  step_rm(timestamp, building_id) %>% 
+  step_medianimpute(all_numeric()) %>% 
+  step_modeimpute(all_nominal()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_dummy(all_nominal(), -all_outcomes())
+
+electricity_recipe
+
+```
+
+`Bake` the recipe, just the check whether it produces the expected results.
+
+```{r}
+tmp <- electricity_recipe %>% 
+  prep() %>% 
+  bake(train)
+
+head(tmp)
+```
+
+## Workflow
+
+The final specification is for the `workflow`, which glues together the `model` and `recipe`.
+
+```{r}
+electricity_wflow <- workflow() %>% 
+  add_model(electricity_mod_01) %>% 
+  add_recipe(electricity_recipe)
+
+electricity_wflow
+
+```
+
+## Resampling
+
+To get a realistic estimate of the performance of our model, we use `3-fold cross validation` for evaluating its predictive accuracy.
+
+```{r}
+folds <- vfold_cv(train, v = 3)
+
+```
+
+## Fitting
+
+Now, we can `fit` the workflow on our training `folds`
+
+```{r}
+electricity_fit <- electricity_wflow %>% 
+  fit_resamples(folds)
+
+```
+
+## Evaluation
+
+and inspect the resulting `metrics`...
+
+```{r}
+collect_metrics(electricity_fit)
+
+```
+
+# Upload to Kaggle
+
+We retrain our model without resampling on the full training set and use the model to make predictions on the test set.
+
+```{r}
+electricity_best <- finalize_workflow(electricity_wflow, select_best(electricity_fit, "rmse"))
+
+electricity_best_fit <- electricity_best %>% 
+  fit(train)
+
+preds <- predict(electricity_best_fit, new_data = test)
+
+```
+
+Finally, we extract the predictions (`preds`) for the test set, bind it together with the `id` columns, rename the column headings, and export the results as a CSV file.
+
+```{r}
+submission <- test %>%
+  select(id) %>% 
+  bind_cols(preds)
+
+names(submission) <- c("id", "meter_reading")
+
+write_csv(submission, "my_submission.csv")
+
+```
+
+# Your Task
+
+Now it's your turn. Try one or more of the following strategies:
+
+1.  `Feature engineering`, that is,
+
+    -   *transform* existing variables (see <https://recipes.tidymodels.org/reference/index.html#section-step-functions-individual-transformations>),
+
+    -   use different *imputations* for missing values (see <https://recipes.tidymodels.org/reference/index.html#section-step-functions-imputation>),
+
+    -   create *new features* from the original variables (e.g., weekday or weekend?),
+
+    -   create *interaction terms* (see <https://recipes.tidymodels.org/reference/step_interact.html>),
+
+2.  Use `LASSO` instead of LM. To tune the `lambda` penalty term, you have to extend the above code by adding code for hyperparameter tuning (see code from Week 6).
+
+3.  Use non-linear `splines` (see Week 7). You can fit natural splines by adding `step_ns` steps to the recipe and try different `deg_free` parameter values (see <https://recipes.tidymodels.org/reference/step_ns.html>). The best deg\_free parameter value can also be determined through tuning.
+
+Please upload your best predictions to our Kaggle competition (<https://www.kaggle.com/c/predicting-electricity-consumption>) - you are allowed to make 20 submissions per day.
