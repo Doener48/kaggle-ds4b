@@ -17,7 +17,7 @@ rm(list=ls())
 set.seed(456)
 options(scipen=10000)
 ggthemr('fresh')
-doParallel::registerDoParallel(cores = 8)
+doParallel::registerDoParallel(cores = 4)
 
 train <- read_csv("train.csv")
 test <- read_csv("test.csv")
